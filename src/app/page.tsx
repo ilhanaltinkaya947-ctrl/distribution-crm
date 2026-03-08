@@ -3,54 +3,48 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
-interface Client {
-  id: string;
-  name: string;
-  phone: string;
-}
-
-interface Product {
-  id: string;
-  sku: string;
-  name: string;
-  price: number;
-  stock_quantity: number;
-}
-
-interface Order {
-  id: string;
-  status: string;
-  total_amount: number;
-  created_at: string;
-  clients: { name: string } | null;
-}
-
 const STATUS_LABELS: Record<string, string> = {
-  new: "Новый",
-  picking: "Сборка",
-  delivering: "Доставка",
-  completed: "Выполнен",
-  cancelled: "Отменён",
+  new: "Новый", picking: "Сборка", ready: "Готов к отгрузке",
+  delivering: "Доставка", arrived: "На точке", completed: "Выполнен", cancelled: "Отменён",
 };
 
 export default function Dashboard() {
-  const [clients, setClients] = useState<Client[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [clientCount, setClientCount] = useState(0);
+  const [productCount, setProductCount] = useState(0);
+  const [orders, setOrders] = useState<any[]>([]);
+  const [products, setProducts] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
-      const [c, p, o] = await Promise.all([
-        supabase.from("clients").select("id, name, phone"),
-        supabase.from("products").select("*"),
-        supabase.from("orders").select("id, status, total_amount, created_at, clients(name)").order("created_at", { ascending: false }),
-      ]);
-      if (c.data) setClients(c.data);
-      if (p.data) setProducts(p.data);
-      if (o.data) setOrders(o.data as unknown as Order[]);
+      try {
+        const [c, p, o] = await Promise.all([
+          supabase.from("clients").select("id", { count: "exact", head: true }),
+          supabase.from("products").select("*"),
+          supabase.from("orders").select("id, status, total_amount, created_at, clients(name)").order("created_at", { ascending: false }).limit(10),
+        ]);
+
+        if (c.error) throw c.error;
+        if (p.error) throw p.error;
+        if (o.error) throw o.error;
+
+        setClientCount(c.count ?? 0);
+        setProducts(p.data ?? []);
+        setProductCount(p.data?.length ?? 0);
+        setOrders(o.data ?? []);
+      } catch (err: any) {
+        console.error("Dashboard load error:", err);
+        setError(err.message || "Ошибка загрузки данных");
+      } finally {
+        setLoading(false);
+      }
     }
     load();
   }, []);
+
+  if (loading) return <div className="p-8 text-zinc-500">Загрузка...</div>;
+  if (error) return <div className="p-8 text-red-600">Ошибка: {error}</div>;
 
   return (
     <div>
@@ -59,11 +53,11 @@ export default function Dashboard() {
       <div className="grid grid-cols-3 gap-4 mb-8">
         <div className="bg-white rounded-lg p-6 shadow-sm">
           <p className="text-sm text-zinc-500">Клиенты</p>
-          <p className="text-3xl font-bold">{clients.length}</p>
+          <p className="text-3xl font-bold">{clientCount}</p>
         </div>
         <div className="bg-white rounded-lg p-6 shadow-sm">
           <p className="text-sm text-zinc-500">Товары</p>
-          <p className="text-3xl font-bold">{products.length}</p>
+          <p className="text-3xl font-bold">{productCount}</p>
         </div>
         <div className="bg-white rounded-lg p-6 shadow-sm">
           <p className="text-sm text-zinc-500">Заказы</p>
@@ -83,7 +77,7 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {orders.map((o) => (
+              {orders.map((o: any) => (
                 <tr key={o.id} className="border-b last:border-0">
                   <td className="py-2">{o.clients?.name ?? "—"}</td>
                   <td className="py-2">{Number(o.total_amount).toLocaleString()} ₸</td>
@@ -112,7 +106,7 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {products.map((p) => (
+              {products.map((p: any) => (
                 <tr key={p.id} className="border-b last:border-0">
                   <td className="py-2">{p.name}</td>
                   <td className="py-2 text-zinc-500">{p.sku}</td>
