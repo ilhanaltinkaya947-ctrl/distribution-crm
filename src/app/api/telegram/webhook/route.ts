@@ -8,18 +8,202 @@ const pendingPhotoProof = new Map<number, string>();
 const orderFlows = new Map<number, { step: string; client_id?: string; items?: { product_id: string; name: string; price: number; quantity: number }[] }>();
 
 // ═══════════════════════════════════════════
+// ROLE-BASED ACCESS CONTROL
+// ═══════════════════════════════════════════
+const ROLE_LABELS: Record<string, string> = {
+  admin: "Администратор",
+  sales_rep: "Менеджер продаж",
+  picker: "Сборщик",
+  driver: "Водитель",
+};
+
+interface Employee {
+  id: string;
+  telegram_id: number;
+  full_name: string;
+  role: string;
+  is_active: boolean;
+}
+
+async function getEmployee(telegramId: number): Promise<Employee | null> {
+  const supabase = getSupabase();
+  const { data } = await supabase
+    .from("employees")
+    .select("id, telegram_id, full_name, role, is_active")
+    .eq("telegram_id", telegramId)
+    .single();
+  return data ?? null;
+}
+
+async function sendAccessDenied(chatId: number, telegramId: number) {
+  await sendTelegramMessage(
+    chatId,
+    `⛔ <b>Доступ закрыт</b>\n\n` +
+    `Вы не зарегистрированы в системе.\n\n` +
+    `Ваш Telegram ID: <code>${telegramId}</code>\n\n` +
+    `Передайте его руководителю для получения доступа.`
+  );
+}
+
+async function sendDeactivated(chatId: number) {
+  await sendTelegramMessage(
+    chatId,
+    `⛔ <b>Аккаунт деактивирован</b>\n\n` +
+    `Ваш аккаунт был деактивирован. Обратитесь к руководителю.`
+  );
+}
+
+// ═══════════════════════════════════════════
+// ADMIN COMMANDS
+// ═══════════════════════════════════════════
+async function handleAddUser(chatId: number, employee: Employee, args: string) {
+  if (employee.role !== "admin") {
+    await sendTelegramMessage(chatId, "⛔ Только администратор может добавлять пользователей.");
+    return;
+  }
+
+  // Parse: /add_user {telegram_id} {role} {full_name}
+  const parts = args.trim().split(/\s+/);
+  if (parts.length < 3) {
+    await sendTelegramMessage(
+      chatId,
+      `📝 <b>Формат команды:</b>\n\n` +
+      `<code>/add_user {telegram_id} {role} {ФИО}</code>\n\n` +
+      `<b>Роли:</b> admin, sales_rep, picker, driver\n\n` +
+      `<b>Пример:</b>\n<code>/add_user 123456789 sales_rep Иван Иванов</code>`
+    );
+    return;
+  }
+
+  const tgId = parseInt(parts[0]);
+  const role = parts[1];
+  const fullName = parts.slice(2).join(" ");
+
+  if (isNaN(tgId)) {
+    await sendTelegramMessage(chatId, "❌ Неверный Telegram ID. Должно быть число.");
+    return;
+  }
+
+  const validRoles = ["admin", "sales_rep", "picker", "driver"];
+  if (!validRoles.includes(role)) {
+    await sendTelegramMessage(chatId, `❌ Неверная роль. Допустимые: ${validRoles.join(", ")}`);
+    return;
+  }
+
+  const supabase = getSupabase();
+  const { error } = await supabase.from("employees").upsert(
+    { telegram_id: tgId, full_name: fullName, role, is_active: true },
+    { onConflict: "telegram_id" }
+  );
+
+  if (error) {
+    await sendTelegramMessage(chatId, `❌ Ошибка: ${error.message}`);
+    return;
+  }
+
+  await sendTelegramMessage(
+    chatId,
+    `✅ <b>Пользователь добавлен</b>\n\n` +
+    `👤 ${fullName}\n` +
+    `🆔 <code>${tgId}</code>\n` +
+    `🏷 ${ROLE_LABELS[role] ?? role}`
+  );
+}
+
+async function handleRemoveUser(chatId: number, employee: Employee, args: string) {
+  if (employee.role !== "admin") {
+    await sendTelegramMessage(chatId, "⛔ Только администратор может удалять пользователей.");
+    return;
+  }
+
+  const tgId = parseInt(args.trim());
+  if (isNaN(tgId)) {
+    await sendTelegramMessage(
+      chatId,
+      `📝 <b>Формат:</b> <code>/remove_user {telegram_id}</code>`
+    );
+    return;
+  }
+
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from("employees")
+    .update({ is_active: false })
+    .eq("telegram_id", tgId);
+
+  if (error) {
+    await sendTelegramMessage(chatId, `❌ Ошибка: ${error.message}`);
+    return;
+  }
+
+  await sendTelegramMessage(chatId, `✅ Пользователь <code>${tgId}</code> деактивирован.`);
+}
+
+async function handleListUsers(chatId: number, employee: Employee) {
+  if (employee.role !== "admin") {
+    await sendTelegramMessage(chatId, "⛔ Только администратор может просматривать пользователей.");
+    return;
+  }
+
+  const supabase = getSupabase();
+  const { data: employees } = await supabase
+    .from("employees")
+    .select("telegram_id, full_name, role, is_active")
+    .order("created_at");
+
+  if (!employees || employees.length === 0) {
+    await sendTelegramMessage(chatId, "Нет зарегистрированных пользователей.");
+    return;
+  }
+
+  let text = `👥 <b>Пользователи системы:</b>\n\n`;
+  employees.forEach((e: any, i: number) => {
+    const status = e.is_active ? "🟢" : "🔴";
+    text += `${i + 1}. ${status} <b>${e.full_name}</b>\n`;
+    text += `   🆔 <code>${e.telegram_id}</code> | ${ROLE_LABELS[e.role] ?? e.role}\n\n`;
+  });
+
+  await sendTelegramMessage(chatId, text);
+}
+
+// ═══════════════════════════════════════════
 // MAIN MENU
 // ═══════════════════════════════════════════
-async function sendMainMenu(chatId: number) {
-  const text =
-    `📊 <b>CRM Дистрибуция</b>\n\n` +
-    `Выберите действие:`;
+async function sendMainMenu(chatId: number, employee: Employee) {
+  const greeting = `Привет, <b>${employee.full_name}</b>! (${ROLE_LABELS[employee.role] ?? employee.role})`;
 
-  await sendTelegramMessage(chatId, text, [
-    [{ text: "📋 Заказы", callback_data: "menu=orders" }, { text: "➕ Новый заказ", callback_data: "menu=neworder" }],
-    [{ text: "👥 Клиенты", callback_data: "menu=clients" }, { text: "📦 Склад", callback_data: "menu=stock" }],
-    [{ text: "💸 Долги", callback_data: "menu=debts" }],
+  const buttons: any[][] = [];
+
+  // All roles see orders
+  buttons.push([
+    { text: "📋 Заказы", callback_data: "menu=orders" },
+    { text: "➕ Новый заказ", callback_data: "menu=neworder" },
   ]);
+
+  // Admin and sales_rep see clients, stock, debts
+  if (employee.role === "admin" || employee.role === "sales_rep") {
+    buttons.push([
+      { text: "👥 Клиенты", callback_data: "menu=clients" },
+      { text: "📦 Склад", callback_data: "menu=stock" },
+    ]);
+    buttons.push([{ text: "💸 Долги", callback_data: "menu=debts" }]);
+  }
+
+  // Picker/driver see stock
+  if (employee.role === "picker" || employee.role === "driver") {
+    buttons.push([{ text: "📦 Склад", callback_data: "menu=stock" }]);
+  }
+
+  // Admin sees user management
+  if (employee.role === "admin") {
+    buttons.push([{ text: "👤 Пользователи", callback_data: "menu=users" }]);
+  }
+
+  await sendTelegramMessage(
+    chatId,
+    `📊 <b>CRM Дистрибуция</b>\n\n${greeting}\n\nВыберите действие:`,
+    buttons
+  );
 }
 
 // ═══════════════════════════════════════════
@@ -138,7 +322,6 @@ async function sendDebts(chatId: number) {
   const totalDebt = orders.reduce((s: number, o: any) => s + Number(o.total_amount), 0);
   let text = `💸 <b>Задолженности:</b>\n\n`;
 
-  // Group by client
   const byClient: Record<string, { total: number; count: number }> = {};
   orders.forEach((o: any) => {
     const name = (o.clients as any)?.name ?? "—";
@@ -214,7 +397,6 @@ async function selectProductForOrder(chatId: number, userId: number, productId: 
 
   const avail = product.stock_quantity - (product.reserved_quantity ?? 0);
 
-  // Add item with quantity 1
   flow.items = flow.items ?? [];
   flow.items.push({ product_id: product.id, name: product.name, price: Number(product.price), quantity: 1 });
   flow.step = "confirm_or_add";
@@ -267,7 +449,6 @@ async function submitOrder(chatId: number, userId: number, paymentMethod: string
 
   const total = flow.items.reduce((s, i) => s + i.price * i.quantity, 0);
 
-  // Reserve stock
   for (const item of flow.items) {
     const { error } = await supabase.rpc("reserve_stock", {
       p_product_id: item.product_id, p_quantity: item.quantity,
@@ -279,7 +460,6 @@ async function submitOrder(chatId: number, userId: number, paymentMethod: string
     }
   }
 
-  // Create order
   const { data: order } = await supabase
     .from("orders")
     .insert({
@@ -296,20 +476,17 @@ async function submitOrder(chatId: number, userId: number, paymentMethod: string
     return;
   }
 
-  // Insert items
   const orderItems = flow.items.map((i) => ({
     order_id: order.id, product_id: i.product_id, quantity: i.quantity, price_at_time: i.price,
   }));
   await supabase.from("order_items").insert(orderItems);
 
-  // Get client name
   const { data: client } = await supabase.from("clients").select("name").eq("id", flow.client_id).single();
   const clientName = client?.name ?? "—";
 
   const PAY: Record<string, string> = { cash: "Наличные", transfer: "Перевод", credit: "В долг" };
   const itemLines = flow.items.map((i) => `  • ${i.name} x ${i.quantity} шт`).join("\n");
 
-  // Send order notification with inline buttons
   const message =
     `🚨 <b>НОВЫЙ ЗАКАЗ</b>\n\n` +
     `🏢 <b>Клиент:</b> ${clientName}\n` +
@@ -459,13 +636,39 @@ async function handleCallback(cq: any) {
   const userId = cq.from.id;
   const data = cq.data as string;
 
+  // Auth check for callbacks
+  const employee = await getEmployee(userId);
+  if (!employee) { await answerCallbackQuery(cq.id, "⛔ Нет доступа"); return; }
+  if (!employee.is_active) { await answerCallbackQuery(cq.id, "⛔ Аккаунт деактивирован"); return; }
+
   // Menu navigation
-  if (data === "menu=main") { await sendMainMenu(chatId); await answerCallbackQuery(cq.id); return; }
+  if (data === "menu=main") { await sendMainMenu(chatId, employee); await answerCallbackQuery(cq.id); return; }
   if (data === "menu=orders") { await sendOrdersList(chatId); await answerCallbackQuery(cq.id); return; }
-  if (data === "menu=clients") { await sendClientsList(chatId); await answerCallbackQuery(cq.id); return; }
+  if (data === "menu=clients") {
+    if (employee.role !== "admin" && employee.role !== "sales_rep") {
+      await answerCallbackQuery(cq.id, "⛔ Нет доступа"); return;
+    }
+    await sendClientsList(chatId); await answerCallbackQuery(cq.id); return;
+  }
   if (data === "menu=stock") { await sendStock(chatId); await answerCallbackQuery(cq.id); return; }
-  if (data === "menu=debts") { await sendDebts(chatId); await answerCallbackQuery(cq.id); return; }
-  if (data === "menu=neworder") { await startNewOrder(chatId, userId); await answerCallbackQuery(cq.id); return; }
+  if (data === "menu=debts") {
+    if (employee.role !== "admin" && employee.role !== "sales_rep") {
+      await answerCallbackQuery(cq.id, "⛔ Нет доступа"); return;
+    }
+    await sendDebts(chatId); await answerCallbackQuery(cq.id); return;
+  }
+  if (data === "menu=neworder") {
+    if (employee.role !== "admin" && employee.role !== "sales_rep") {
+      await answerCallbackQuery(cq.id, "⛔ Только менеджеры могут создавать заказы"); return;
+    }
+    await startNewOrder(chatId, userId); await answerCallbackQuery(cq.id); return;
+  }
+  if (data === "menu=users") {
+    if (employee.role !== "admin") {
+      await answerCallbackQuery(cq.id, "⛔ Нет доступа"); return;
+    }
+    await handleListUsers(chatId, employee); await answerCallbackQuery(cq.id); return;
+  }
 
   // New order flow
   if (data.startsWith("neworder=")) {
@@ -501,22 +704,63 @@ async function handleCallback(cq: any) {
 // ═══════════════════════════════════════════
 async function handleTextMessage(message: any) {
   const chatId = message.chat.id;
+  const userId = message.from.id;
   const text = (message.text ?? "").trim();
 
+  // Auth gate — check employee FIRST
+  const employee = await getEmployee(userId);
+
+  if (!employee) {
+    await sendAccessDenied(chatId, userId);
+    return;
+  }
+
+  if (!employee.is_active) {
+    await sendDeactivated(chatId);
+    return;
+  }
+
+  // Admin commands
+  if (text.startsWith("/add_user")) {
+    await handleAddUser(chatId, employee, text.replace("/add_user", "").trim());
+    return;
+  }
+  if (text.startsWith("/remove_user")) {
+    await handleRemoveUser(chatId, employee, text.replace("/remove_user", "").trim());
+    return;
+  }
+  if (text === "/users") {
+    await handleListUsers(chatId, employee);
+    return;
+  }
+
+  // Standard commands
   if (text === "/start" || text === "/menu") {
-    await sendMainMenu(chatId);
+    await sendMainMenu(chatId, employee);
   } else if (text === "/orders") {
     await sendOrdersList(chatId);
   } else if (text === "/clients") {
-    await sendClientsList(chatId);
+    if (employee.role === "admin" || employee.role === "sales_rep") {
+      await sendClientsList(chatId);
+    } else {
+      await sendTelegramMessage(chatId, "⛔ Нет доступа к списку клиентов.");
+    }
   } else if (text === "/stock") {
     await sendStock(chatId);
   } else if (text === "/debts") {
-    await sendDebts(chatId);
+    if (employee.role === "admin" || employee.role === "sales_rep") {
+      await sendDebts(chatId);
+    } else {
+      await sendTelegramMessage(chatId, "⛔ Нет доступа к долгам.");
+    }
   } else if (text === "/neworder") {
-    await startNewOrder(chatId, message.from.id);
+    if (employee.role === "admin" || employee.role === "sales_rep") {
+      await startNewOrder(chatId, userId);
+    } else {
+      await sendTelegramMessage(chatId, "⛔ Только менеджеры могут создавать заказы.");
+    }
   } else {
-    await sendMainMenu(chatId);
+    await sendMainMenu(chatId, employee);
   }
 }
 
@@ -530,6 +774,15 @@ export async function POST(req: NextRequest) {
     if (update.callback_query) {
       await handleCallback(update.callback_query);
     } else if (update.message?.photo) {
+      // Photo handler still needs auth
+      const userId = update.message.from?.id;
+      if (userId) {
+        const employee = await getEmployee(userId);
+        if (!employee || !employee.is_active) {
+          await sendAccessDenied(update.message.chat.id, userId);
+          return NextResponse.json({ ok: true });
+        }
+      }
       await handlePhoto(update.message);
     } else if (update.message?.text) {
       await handleTextMessage(update.message);

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Script from "next/script";
+import { TelegramAuthGuard } from "@/components/telegram-auth-guard";
 
 export const metadata: Metadata = {
   title: "ASKOM CRM",
@@ -29,7 +30,9 @@ export default function TgLayout({ children }: { children: React.ReactNode }) {
         minHeight: "100vh",
         margin: 0,
       }}>
-        {children}
+        <TelegramAuthGuard>
+          {children}
+        </TelegramAuthGuard>
       </div>
     </>
   );
