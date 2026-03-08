@@ -31,10 +31,10 @@ async function getOrderMessage(orderId: string) {
     credit: "В долг",
   };
 
-  const clientName = (order.clients as { name: string } | null)?.name ?? "—";
+  const clientName = (order.clients as unknown as { name: string } | null)?.name ?? "—";
   const itemLines = (items ?? [])
     .map((i) => {
-      const productName = (i.products as { name: string } | null)?.name ?? "—";
+      const productName = (i.products as unknown as { name: string } | null)?.name ?? "—";
       return `  • ${productName} x ${i.quantity} шт`;
     })
     .join("\n");

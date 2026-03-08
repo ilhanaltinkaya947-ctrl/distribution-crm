@@ -69,7 +69,7 @@ export default function OrdersPage() {
       .from("orders")
       .select("id, status, total_amount, payment_method, payment_status, created_at, clients(name)")
       .order("created_at", { ascending: false });
-    if (data) setOrders(data as Order[]);
+    if (data) setOrders(data as unknown as Order[]);
   }
 
   async function loadFormData() {

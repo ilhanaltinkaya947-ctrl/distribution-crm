@@ -47,7 +47,7 @@ export default function Dashboard() {
       ]);
       if (c.data) setClients(c.data);
       if (p.data) setProducts(p.data);
-      if (o.data) setOrders(o.data as Order[]);
+      if (o.data) setOrders(o.data as unknown as Order[]);
     }
     load();
   }, []);

@@ -54,7 +54,7 @@ export default function TgHome() {
           .limit(20),
         supabase.from("products").select("id, name, price, stock_quantity").order("name"),
       ]);
-      if (o.data) setOrders(o.data as Order[]);
+      if (o.data) setOrders(o.data as unknown as Order[]);
       if (p.data) setProducts(p.data);
     }
     load();
