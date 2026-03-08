@@ -11,11 +11,23 @@ const orderFlows = new Map<number, { step: string; client_id?: string; items?: {
 // ROLE-BASED ACCESS CONTROL
 // ═══════════════════════════════════════════
 const ROLE_LABELS: Record<string, string> = {
+  director: "Директор",
   admin: "Администратор",
   sales_rep: "Менеджер продаж",
+  warehouse: "Кладовщик",
   picker: "Сборщик",
   driver: "Водитель",
+  accountant: "Бухгалтер",
 };
+
+// Who can do what
+const DIRECTORS = ["director", "admin"];
+const CAN_CREATE_ORDERS = ["director", "admin", "sales_rep"];
+const CAN_VIEW_CLIENTS = ["director", "admin", "sales_rep", "accountant"];
+const CAN_VIEW_DEBTS = ["director", "admin", "sales_rep", "accountant"];
+const CAN_PICK_ORDERS = ["director", "admin", "warehouse", "picker"];
+const CAN_DELIVER_ORDERS = ["director", "admin", "driver"];
+const CAN_MANAGE_USERS = ["director", "admin"];
 
 interface Employee {
   id: string;
@@ -57,8 +69,8 @@ async function sendDeactivated(chatId: number) {
 // ADMIN COMMANDS
 // ═══════════════════════════════════════════
 async function handleAddUser(chatId: number, employee: Employee, args: string) {
-  if (employee.role !== "admin") {
-    await sendTelegramMessage(chatId, "⛔ Только администратор может добавлять пользователей.");
+  if (!CAN_MANAGE_USERS.includes(employee.role)) {
+    await sendTelegramMessage(chatId, "⛔ Только директор/администратор может добавлять пользователей.");
     return;
   }
 
@@ -84,7 +96,7 @@ async function handleAddUser(chatId: number, employee: Employee, args: string) {
     return;
   }
 
-  const validRoles = ["admin", "sales_rep", "picker", "driver"];
+  const validRoles = ["director", "admin", "sales_rep", "warehouse", "picker", "driver", "accountant"];
   if (!validRoles.includes(role)) {
     await sendTelegramMessage(chatId, `❌ Неверная роль. Допустимые: ${validRoles.join(", ")}`);
     return;
@@ -111,8 +123,8 @@ async function handleAddUser(chatId: number, employee: Employee, args: string) {
 }
 
 async function handleRemoveUser(chatId: number, employee: Employee, args: string) {
-  if (employee.role !== "admin") {
-    await sendTelegramMessage(chatId, "⛔ Только администратор может удалять пользователей.");
+  if (!CAN_MANAGE_USERS.includes(employee.role)) {
+    await sendTelegramMessage(chatId, "⛔ Только директор/администратор может удалять пользователей.");
     return;
   }
 
@@ -140,8 +152,8 @@ async function handleRemoveUser(chatId: number, employee: Employee, args: string
 }
 
 async function handleListUsers(chatId: number, employee: Employee) {
-  if (employee.role !== "admin") {
-    await sendTelegramMessage(chatId, "⛔ Только администратор может просматривать пользователей.");
+  if (!CAN_MANAGE_USERS.includes(employee.role)) {
+    await sendTelegramMessage(chatId, "⛔ Только директор/администратор может просматривать пользователей.");
     return;
   }
 
@@ -173,29 +185,35 @@ async function sendMainMenu(chatId: number, employee: Employee) {
   const greeting = `Привет, <b>${employee.full_name}</b>! (${ROLE_LABELS[employee.role] ?? employee.role})`;
 
   const buttons: any[][] = [];
+  const r = employee.role;
 
-  // All roles see orders
-  buttons.push([
-    { text: "📋 Заказы", callback_data: "menu=orders" },
-    { text: "➕ Новый заказ", callback_data: "menu=neworder" },
-  ]);
+  // Orders row
+  if (CAN_CREATE_ORDERS.includes(r)) {
+    buttons.push([
+      { text: "📋 Заказы", callback_data: "menu=orders" },
+      { text: "➕ Новый заказ", callback_data: "menu=neworder" },
+    ]);
+  } else {
+    buttons.push([{ text: "📋 Заказы", callback_data: "menu=orders" }]);
+  }
 
-  // Admin and sales_rep see clients, stock, debts
-  if (employee.role === "admin" || employee.role === "sales_rep") {
+  // Clients + Stock
+  if (CAN_VIEW_CLIENTS.includes(r)) {
     buttons.push([
       { text: "👥 Клиенты", callback_data: "menu=clients" },
       { text: "📦 Склад", callback_data: "menu=stock" },
     ]);
-    buttons.push([{ text: "💸 Долги", callback_data: "menu=debts" }]);
-  }
-
-  // Picker/driver see stock
-  if (employee.role === "picker" || employee.role === "driver") {
+  } else {
     buttons.push([{ text: "📦 Склад", callback_data: "menu=stock" }]);
   }
 
-  // Admin sees user management
-  if (employee.role === "admin") {
+  // Debts
+  if (CAN_VIEW_DEBTS.includes(r)) {
+    buttons.push([{ text: "💸 Долги", callback_data: "menu=debts" }]);
+  }
+
+  // User management (directors/admins only)
+  if (CAN_MANAGE_USERS.includes(r)) {
     buttons.push([{ text: "👤 Пользователи", callback_data: "menu=users" }]);
   }
 
@@ -549,36 +567,63 @@ async function handleOrderAction(callbackQuery: any) {
   const orderId = params.get("order_id");
   if (!action || !orderId) return;
 
+  // Get the employee for role check
+  const employee = await getEmployee(callbackQuery.from.id);
+  if (!employee || !employee.is_active) {
+    await answerCallbackQuery(callbackQuery.id, "⛔ Нет доступа");
+    return;
+  }
+
   const result = await getOrderHeader(orderId);
   if (!result) { await answerCallbackQuery(callbackQuery.id, "Заказ не найден"); return; }
 
   const { order, header } = result;
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
-  const userName = callbackQuery.from.first_name;
+  const userName = employee.full_name;
 
+  // ── PICK: only warehouse/picker/director/admin ──
   if (action === "pick" && order.status === "new") {
-    await supabase.from("orders").update({ status: "picking" }).eq("id", orderId);
+    if (!CAN_PICK_ORDERS.includes(employee.role)) {
+      await answerCallbackQuery(callbackQuery.id, "⛔ Отказано: Эта кнопка только для кладовщиков");
+      return;
+    }
+    await supabase.from("orders").update({ status: "picking", picked_by: employee.id }).eq("id", orderId);
     await editTelegramMessage(chatId, messageId,
       `${header}\n\n🟡 <b>Статус: Сборка</b>\n👷 Взял в работу: ${userName}`,
       [[{ text: "✅ Готово к отгрузке", callback_data: `action=ready&order_id=${orderId}` }]]);
     await answerCallbackQuery(callbackQuery.id, "Взято в сборку");
   }
+  // ── READY: only warehouse/picker/director/admin ──
   else if (action === "ready" && order.status === "picking") {
+    if (!CAN_PICK_ORDERS.includes(employee.role)) {
+      await answerCallbackQuery(callbackQuery.id, "⛔ Отказано: Только кладовщик может завершить сборку");
+      return;
+    }
     await supabase.from("orders").update({ status: "ready" }).eq("id", orderId);
     await editTelegramMessage(chatId, messageId,
       `${header}\n\n🟢 <b>Статус: Готово к отгрузке</b>\n📦 Собрал: ${userName}`,
       [[{ text: "🚚 Взять доставку", callback_data: `action=deliver&order_id=${orderId}` }]]);
     await answerCallbackQuery(callbackQuery.id, "Готово к отгрузке");
   }
+  // ── DELIVER: only driver/director/admin ──
   else if (action === "deliver" && order.status === "ready") {
-    await supabase.from("orders").update({ status: "delivering" }).eq("id", orderId);
+    if (!CAN_DELIVER_ORDERS.includes(employee.role)) {
+      await answerCallbackQuery(callbackQuery.id, "⛔ Отказано: Эта кнопка только для водителей");
+      return;
+    }
+    await supabase.from("orders").update({ status: "delivering", delivered_by: employee.id }).eq("id", orderId);
     await editTelegramMessage(chatId, messageId,
       `${header}\n\n🔵 <b>Статус: Доставка</b>\n🚚 Водитель: ${userName}`,
       [[{ text: "📍 Прибыл на точку", callback_data: `action=arrived&order_id=${orderId}` }]]);
     await answerCallbackQuery(callbackQuery.id, "Взято на доставку");
   }
+  // ── ARRIVED: only driver/director/admin ──
   else if (action === "arrived" && order.status === "delivering") {
+    if (!CAN_DELIVER_ORDERS.includes(employee.role)) {
+      await answerCallbackQuery(callbackQuery.id, "⛔ Отказано: Только водитель может отметить прибытие");
+      return;
+    }
     await supabase.from("orders").update({ status: "arrived" }).eq("id", orderId);
     pendingPhotoProof.set(callbackQuery.from.id, orderId);
     await editTelegramMessage(chatId, messageId,
@@ -645,26 +690,26 @@ async function handleCallback(cq: any) {
   if (data === "menu=main") { await sendMainMenu(chatId, employee); await answerCallbackQuery(cq.id); return; }
   if (data === "menu=orders") { await sendOrdersList(chatId); await answerCallbackQuery(cq.id); return; }
   if (data === "menu=clients") {
-    if (employee.role !== "admin" && employee.role !== "sales_rep") {
+    if (!CAN_VIEW_CLIENTS.includes(employee.role)) {
       await answerCallbackQuery(cq.id, "⛔ Нет доступа"); return;
     }
     await sendClientsList(chatId); await answerCallbackQuery(cq.id); return;
   }
   if (data === "menu=stock") { await sendStock(chatId); await answerCallbackQuery(cq.id); return; }
   if (data === "menu=debts") {
-    if (employee.role !== "admin" && employee.role !== "sales_rep") {
+    if (!CAN_VIEW_DEBTS.includes(employee.role)) {
       await answerCallbackQuery(cq.id, "⛔ Нет доступа"); return;
     }
     await sendDebts(chatId); await answerCallbackQuery(cq.id); return;
   }
   if (data === "menu=neworder") {
-    if (employee.role !== "admin" && employee.role !== "sales_rep") {
+    if (!CAN_CREATE_ORDERS.includes(employee.role)) {
       await answerCallbackQuery(cq.id, "⛔ Только менеджеры могут создавать заказы"); return;
     }
     await startNewOrder(chatId, userId); await answerCallbackQuery(cq.id); return;
   }
   if (data === "menu=users") {
-    if (employee.role !== "admin") {
+    if (!CAN_MANAGE_USERS.includes(employee.role)) {
       await answerCallbackQuery(cq.id, "⛔ Нет доступа"); return;
     }
     await handleListUsers(chatId, employee); await answerCallbackQuery(cq.id); return;
@@ -740,7 +785,7 @@ async function handleTextMessage(message: any) {
   } else if (text === "/orders") {
     await sendOrdersList(chatId);
   } else if (text === "/clients") {
-    if (employee.role === "admin" || employee.role === "sales_rep") {
+    if (CAN_VIEW_CLIENTS.includes(employee.role)) {
       await sendClientsList(chatId);
     } else {
       await sendTelegramMessage(chatId, "⛔ Нет доступа к списку клиентов.");
@@ -748,13 +793,13 @@ async function handleTextMessage(message: any) {
   } else if (text === "/stock") {
     await sendStock(chatId);
   } else if (text === "/debts") {
-    if (employee.role === "admin" || employee.role === "sales_rep") {
+    if (CAN_VIEW_DEBTS.includes(employee.role)) {
       await sendDebts(chatId);
     } else {
       await sendTelegramMessage(chatId, "⛔ Нет доступа к долгам.");
     }
   } else if (text === "/neworder") {
-    if (employee.role === "admin" || employee.role === "sales_rep") {
+    if (CAN_CREATE_ORDERS.includes(employee.role)) {
       await startNewOrder(chatId, userId);
     } else {
       await sendTelegramMessage(chatId, "⛔ Только менеджеры могут создавать заказы.");

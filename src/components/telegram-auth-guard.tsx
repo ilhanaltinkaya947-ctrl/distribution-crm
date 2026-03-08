@@ -6,7 +6,7 @@ interface Employee {
   id: string;
   telegram_id: number;
   full_name: string;
-  role: "admin" | "sales_rep" | "picker" | "driver";
+  role: "director" | "admin" | "sales_rep" | "warehouse" | "picker" | "driver" | "accountant";
 }
 
 interface AuthContextValue {
