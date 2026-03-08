@@ -1,17 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { editTelegramMessage, answerCallbackQuery, sendTelegramMessage } from "@/lib/telegram";
-import { createClient } from "@supabase/supabase-js";
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+import { getSupabase } from "@/lib/supabase-server";
 
 // In-memory map: tg_user_id -> order_id awaiting photo proof
 // In production, use Redis or a DB table
 const pendingPhotoProof = new Map<number, string>();
 
 async function getOrderMessage(orderId: string) {
+  const supabase = getSupabase();
   const { data: order } = await supabase
     .from("orders")
     .select("id, status, total_amount, payment_method, tg_chat_id, tg_message_id, clients(name)")
@@ -54,6 +50,7 @@ async function handleCallback(callbackQuery: {
   message: { chat: { id: number }; message_id: number };
   data: string;
 }) {
+  const supabase = getSupabase();
   const params = new URLSearchParams(callbackQuery.data);
   const action = params.get("action");
   const orderId = params.get("order_id");
@@ -171,6 +168,7 @@ async function handlePhoto(message: {
   chat: { id: number };
   photo: { file_id: string }[];
 }) {
+  const supabase = getSupabase();
   const userId = message.from.id;
   const orderId = pendingPhotoProof.get(userId);
 
@@ -194,7 +192,6 @@ async function handlePhoto(message: {
 
   if (items) {
     for (const item of items) {
-      // Deduct reserved → completed (reduce both stock and reserved)
       await supabase.rpc("complete_order_item", {
         p_product_id: item.product_id,
         p_quantity: item.quantity,

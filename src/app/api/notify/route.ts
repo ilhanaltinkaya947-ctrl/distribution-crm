@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendTelegramMessage } from "@/lib/telegram";
-import { createClient } from "@supabase/supabase-js";
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+import { getSupabase } from "@/lib/supabase-server";
 
 interface OrderItem {
   name: string;
@@ -13,6 +8,7 @@ interface OrderItem {
 }
 
 export async function POST(req: NextRequest) {
+  const supabase = getSupabase();
   const { orderId, clientName, items, total, paymentMethod } = (await req.json()) as {
     orderId: string;
     clientName: string;
